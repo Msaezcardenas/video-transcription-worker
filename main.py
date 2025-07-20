@@ -99,6 +99,39 @@ async def transcribe_video(video_path: str) -> TranscriptionResult:
         
     except Exception as e:
         logger.error(f"Error transcribiendo video: {str(e)}")
+        
+        # Fallback: Transcripción simulada cuando falla OpenAI
+        if "insufficient_quota" in str(e):
+            logger.warning("Usando transcripción simulada debido a falta de cuota en OpenAI")
+            
+            mock_text = (
+                "Hola, mi nombre es [Candidato] y estoy muy entusiasmado por esta oportunidad. "
+                "Tengo experiencia relevante en el área y creo que puedo aportar mucho valor a su equipo. "
+                "Me considero una persona proactiva, con capacidad de trabajo en equipo y siempre "
+                "dispuesto a aprender nuevas tecnologías. Gracias por considerarme para este puesto."
+            )
+            
+            # Crear segmentos simulados
+            words = mock_text.split()
+            segments = []
+            words_per_segment = 10
+            current_time = 0.0
+            
+            for i in range(0, len(words), words_per_segment):
+                segment_words = words[i:i + words_per_segment]
+                segment_text = " ".join(segment_words)
+                segments.append({
+                    "start": current_time,
+                    "end": current_time + 3.0,
+                    "text": segment_text
+                })
+                current_time += 3.0
+            
+            return TranscriptionResult(
+                text=f"[TRANSCRIPCIÓN SIMULADA - Sin créditos OpenAI]\n\n{mock_text}",
+                segments=segments
+            )
+        
         raise
 
 # Función principal de procesamiento

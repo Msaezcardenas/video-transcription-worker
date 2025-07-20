@@ -1,8 +1,8 @@
 FROM python:3.9-slim
 
-# Instalar ffmpeg (necesario para algunos formatos de video)
+# Instalar dependencias del sistema
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar el resto del código
 COPY . .
 
-# Puerto por defecto
+# Puerto por defecto (Render lo sobrescribe con $PORT)
 ENV PORT=8000
 
 # Comando para ejecutar el servidor

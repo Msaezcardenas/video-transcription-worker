@@ -33,6 +33,9 @@ supabase: Client = create_client(
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Variable global para controlar el proceso periódico
+periodic_task_running = False
+
 # Modelos de datos
 class WebhookPayload(BaseModel):
     response_id: str
@@ -282,6 +285,54 @@ async def health():
             "openai": "configured" if os.getenv("OPENAI_API_KEY") else "not configured"
         }
     }
+
+# Proceso periódico para buscar videos pendientes
+async def process_pending_videos():
+    """Busca y procesa videos pendientes cada 30 segundos"""
+    global periodic_task_running
+    
+    while periodic_task_running:
+        try:
+            logger.info("Buscando videos pendientes...")
+            
+            # Buscar respuestas pendientes
+            result = supabase.table('responses').select("*").eq('processing_status', 'pending').execute()
+            
+            if result.data:
+                logger.info(f"Encontrados {len(result.data)} videos pendientes")
+                
+                for response in result.data:
+                    # Verificar que sea un video
+                    if response.get('data', {}).get('type') == 'video':
+                        try:
+                            await process_video(response['id'])
+                        except Exception as e:
+                            logger.error(f"Error procesando video {response['id']}: {str(e)}")
+            else:
+                logger.info("No hay videos pendientes")
+                
+        except Exception as e:
+            logger.error(f"Error en proceso periódico: {str(e)}")
+        
+        # Esperar 30 segundos antes de la siguiente verificación
+        await asyncio.sleep(30)
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicia el proceso periódico al arrancar la aplicación"""
+    global periodic_task_running
+    periodic_task_running = True
+    
+    # Iniciar proceso periódico en background
+    asyncio.create_task(process_pending_videos())
+    logger.info("Worker iniciado - Proceso periódico activo")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Detiene el proceso periódico al cerrar la aplicación"""
+    global periodic_task_running
+    periodic_task_running = False
+    logger.info("Worker detenido")
 
 # Para desarrollo local
 if __name__ == "__main__":

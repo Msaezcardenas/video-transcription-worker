@@ -1,64 +1,97 @@
-# Video Transcription Worker
+# Talium Video Transcription Worker
 
-Worker en Python con FastAPI que recibe webhooks y procesa videos usando OpenAI Whisper API.
+<p align="center">
+  <img src="/public/next.svg" alt="Talium Worker Logo" width="120" />
+</p>
 
-## 🚀 Características
+**Talium Video Transcription Worker** es el microservicio encargado de procesar y transcribir videos de entrevistas en la plataforma Talium, usando inteligencia artificial de última generación (OpenAI Whisper).
 
-- **Webhook endpoint** para recibir `response_id`
-- **Descarga videos** desde Supabase Storage
-- **Transcribe con OpenAI Whisper** (incluye timestamps)
-- **Actualiza estado** en la base de datos
-- **Procesamiento asíncrono** en background
-- **Logging detallado** para debugging
+---
 
-## 📋 Requisitos
+## 🎯 ¿Para qué sirve este worker?
+- Automatiza la transcripción de respuestas en video de los candidatos.
+- Recibe webhooks desde la app principal Talium y procesa en background.
+- Actualiza la base de datos de Supabase con transcripciones y metadatos.
+- Permite a RRHH analizar respuestas de video de forma eficiente y accesible.
 
+---
+
+## 🏗️ Arquitectura y Diseño
+- **Python + FastAPI:** API robusta, asíncrona y fácil de mantener.
+- **OpenAI Whisper:** Transcripción automática de audio/video con alta precisión.
+- **Supabase:** Fuente de datos y almacenamiento seguro de videos.
+- **Procesamiento desacoplado:** El worker es independiente, escalable y puede correr en cualquier infraestructura (Render, Railway, Docker, local).
+- **Logging detallado:** Para debugging y monitoreo en producción.
+
+### Diagrama de flujo
+```
+[App Talium] --(webhook: response_id)--> [Worker]
+    |                                 |
+    |<-- PATCH: transcript, status ---|
+[Supabase Storage] <--- descarga ---> [Worker]
+```
+
+---
+
+## 🚀 Características principales
+- Webhook endpoint para recibir `response_id`
+- Descarga videos desde Supabase Storage
+- Transcribe con OpenAI Whisper (texto y timestamps)
+- Actualiza estado y transcripción en la base de datos
+- Procesamiento asíncrono y seguro
+- Logging detallado para debugging
+
+---
+
+## 🛠️ Instalación y Despliegue
+
+### Requisitos
 - Python 3.8+
 - Cuenta de Supabase con Service Key
 - API Key de OpenAI
 
-## 🔧 Instalación
-
-### 1. Instalar dependencias
-
+### Instalación local
 ```bash
 cd worker
 pip install -r requirements.txt
 ```
 
-### 2. Configurar variables de entorno
-
+### Configuración de variables de entorno
 Crea un archivo `.env`:
-
 ```env
-# Supabase
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-
-# OpenAI
 OPENAI_API_KEY=sk-your-openai-api-key
 ```
 
-### 3. Ejecutar el worker
-
+### Ejecución
 ```bash
 # Desarrollo
 python main.py
-
-# O con uvicorn directamente
+# O con uvicorn
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### Despliegue en producción
+- **Render:** Deploy directo con Dockerfile incluido
+- **Railway:** Compatible con railway up
+- **Heroku:** Soportado (ver ejemplo en este README)
+- **Docker:**
+```bash
+docker build -t talium-worker .
+docker run -p 8000:8000 --env-file .env talium-worker
+```
+
+---
 
 ## 📡 Uso del Webhook
 
 ### Endpoint principal
-
 ```
 POST http://localhost:8000/webhook
 ```
 
 ### Payload
-
 ```json
 {
   "response_id": "uuid-de-la-respuesta"
@@ -66,7 +99,6 @@ POST http://localhost:8000/webhook
 ```
 
 ### Respuesta
-
 ```json
 {
   "status": "accepted",
@@ -75,119 +107,78 @@ POST http://localhost:8000/webhook
 }
 ```
 
-## 🔄 Flujo de Procesamiento
+---
 
-1. **Recibe webhook** con `response_id`
-2. **Obtiene datos** de la tabla `responses`
-3. **Marca como `processing`**
-4. **Descarga video** desde `video_url`
-5. **Transcribe con Whisper**
-6. **Actualiza respuesta** con transcripción
-7. **Marca como `completed`** o `failed`
+## 🔄 Flujo de Procesamiento
+1. Recibe webhook con `response_id`
+2. Obtiene datos de la tabla `responses` en Supabase
+3. Marca como `processing`
+4. Descarga video desde `video_url`
+5. Transcribe con Whisper
+6. Actualiza respuesta con transcripción y timestamps
+7. Marca como `completed` o `failed`
+
+---
 
 ## 🗄️ Estructura de Datos
-
-El worker actualiza el campo JSONB `data` con:
-
+El worker actualiza el campo JSONB `data` en la tabla `responses`:
 ```json
 {
   "video_url": "url-existente",
   "transcript": "Texto completo de la transcripción",
   "timestamped_transcript": [
-    {
-      "start": 0.0,
-      "end": 3.5,
-      "text": "Segmento de texto"
-    }
+    { "start": 0.0, "end": 3.5, "text": "Segmento de texto" }
   ],
   "transcription_method": "openai_whisper",
   "transcribed_at": "2024-01-15T10:30:00Z"
 }
 ```
 
-## 🧪 Testing
+---
 
-### Verificar salud del servicio
+## 🧪 Testing y Debug
+- **Verificar salud:**
+  ```bash
+  curl http://localhost:8000/health
+  ```
+- **Enviar webhook de prueba:**
+  ```bash
+  curl -X POST http://localhost:8000/webhook \
+    -H "Content-Type: application/json" \
+    -d '{"response_id": "tu-response-id-aqui"}'
+  ```
+- **Ver logs:**
+  Los logs muestran el progreso y errores detallados.
 
-```bash
-curl http://localhost:8000/health
-```
+---
 
-### Enviar webhook de prueba
-
-```bash
-curl -X POST http://localhost:8000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"response_id": "tu-response-id-aqui"}'
-```
-
-### Ver logs
-
-Los logs mostrarán el progreso:
-
-```
-2024-01-15 10:30:00 - INFO - Webhook recibido para response_id: xxx
-2024-01-15 10:30:01 - INFO - Iniciando procesamiento para response_id: xxx
-2024-01-15 10:30:02 - INFO - Descargando video desde: https://...
-2024-01-15 10:30:05 - INFO - Transcribiendo video: /tmp/xxx.webm
-2024-01-15 10:30:15 - INFO - ✅ Procesamiento completado para response_id: xxx
-```
-
-## 🚀 Deploy
-
-### Opción 1: Railway
-
-```bash
-railway login
-railway link
-railway up
-```
-
-### Opción 2: Render
-
-1. Crear `Dockerfile`:
-
-```dockerfile
-FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-2. Deploy en Render como Web Service
-
-### Opción 3: Heroku
-
-```bash
-heroku create tu-worker-app
-heroku config:set SUPABASE_URL=xxx
-heroku config:set SUPABASE_SERVICE_KEY=xxx
-heroku config:set OPENAI_API_KEY=xxx
-git push heroku main
-```
-
-## 🔐 Seguridad
-
-- El Service Key de Supabase debe mantenerse **privado**
-- Considera agregar autenticación al webhook
+## 🔐 Seguridad y Buenas Prácticas
+- El Service Key de Supabase debe mantenerse **privado** (nunca en frontend)
+- Considera agregar autenticación al webhook en producción
 - Usa HTTPS en producción
+- Manejo robusto de errores y logs
+
+---
 
 ## 💰 Costos
-
-- **OpenAI Whisper API**: $0.006 por minuto de audio
+- **OpenAI Whisper API:** $0.006 por minuto de audio (ver [precios oficiales](https://openai.com/pricing))
 - Ejemplo: Video de 2 minutos = $0.012
 
+---
+
 ## 🐛 Troubleshooting
+- **No se encontró video_url:** Verifica que el campo `data.video_url` existe en la respuesta
+- **Error de transcripción:** Verifica el API Key de OpenAI y que el video tenga audio
+- **Worker no procesa:** Revisa los logs y la conexión con Supabase
 
-### Error: "No se encontró video_url"
-- Verifica que el campo `data.video_url` existe en la respuesta
+---
 
-### Error de transcripción
-- Verifica que el API Key de OpenAI es válido
-- Confirma que el video tiene audio
+## 👨‍💻 Créditos y Contacto
+- **Desarrollo & Integración:** Molu Sáez (github.com/Msaezcardenas)
+- **Contacto:** soporte@talium.com
 
-### Worker no procesa
-- Revisa los logs para errores
+---
+
+## 📝 Licencia
+MIT 
 - Verifica conexión con Supabase 

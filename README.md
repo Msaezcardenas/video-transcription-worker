@@ -1,8 +1,5 @@
 # Talium Video Transcription Worker
 
-<p align="center">
-  <img src="/public/next.svg" alt="Talium Worker Logo" width="120" />
-</p>
 
 **Talium Video Transcription Worker** es el microservicio encargado de procesar y transcribir videos de entrevistas en la plataforma Talium, usando inteligencia artificial de última generación (OpenAI Whisper).
 

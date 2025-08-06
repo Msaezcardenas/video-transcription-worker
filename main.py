@@ -4,10 +4,13 @@ import tempfile
 from typing import Optional
 from datetime import datetime
 import logging
+import json
+import base64
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from supabase import create_client, Client
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from openai import OpenAI
 import requests
 from dotenv import load_dotenv
@@ -25,13 +28,22 @@ logger = logging.getLogger(__name__)
 # Inicializar FastAPI
 app = FastAPI(title="Video Transcription Worker")
 
-# Inicializar clientes
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_KEY")
-)
+# Configuración de PostgreSQL
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT", "5432"),
+    "database": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+}
 
+# Cliente OpenAI
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Función para obtener conexión a PostgreSQL
+def get_db_connection():
+    """Crear conexión a PostgreSQL"""
+    return psycopg2.connect(**DB_CONFIG)
 
 # Variable global para controlar el proceso periódico
 periodic_task_running = False
@@ -51,23 +63,55 @@ class TranscriptionResult(BaseModel):
     text: str
     segments: list
 
-# Función para descargar video desde Supabase Storage
-async def download_video(video_url: str, output_path: str) -> None:
-    """Descarga el video desde la URL proporcionada"""
-    logger.info(f"Descargando video desde: {video_url}")
-    
+# Función para obtener respuesta de la base de datos
+def get_response_data(response_id: str):
+    """Obtener datos de la respuesta desde PostgreSQL"""
+    conn = get_db_connection()
     try:
-        response = requests.get(video_url, stream=True)
-        response.raise_for_status()
-        
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                
-        logger.info(f"Video descargado exitosamente: {output_path}")
-    except Exception as e:
-        logger.error(f"Error descargando video: {str(e)}")
-        raise
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT r.*, q.type as question_type
+                FROM responses r
+                JOIN questions q ON r.question_id = q.id
+                WHERE r.id = %s
+            """, (response_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+# Función para actualizar estado de procesamiento
+def update_response_status(response_id: str, status: str):
+    """Actualizar estado de procesamiento en PostgreSQL"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE responses 
+                SET processing_status = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (status, response_id))
+            conn.commit()
+    finally:
+        conn.close()
+
+# Función para extraer video base64 de los datos
+def extract_video_data(response_data: dict) -> Optional[str]:
+    """Extrae el video base64 de la estructura de datos"""
+    data = response_data.get('data', {})
+    
+    # Buscar el video en diferentes formatos posibles
+    if isinstance(data, dict):
+        # Formato nuevo: data.response.data
+        if 'response' in data and isinstance(data['response'], dict):
+            if 'data' in data['response']:
+                return data['response']['data']
+        # Formato antiguo: data.video_url (no soportado en este caso)
+        elif 'video_url' in data:
+            logger.warning("Formato video_url no soportado, se requiere base64")
+            return None
+    
+    return None
 
 # Función para transcribir video con OpenAI Whisper
 async def transcribe_video(video_path: str) -> TranscriptionResult:
@@ -85,16 +129,33 @@ async def transcribe_video(video_path: str) -> TranscriptionResult:
             )
         
         # Extraer texto y segmentos con timestamps
-        result = TranscriptionResult(
-            text=transcript.text,
-            segments=[
+        # El resultado de OpenAI en formato verbose_json es un diccionario
+        if hasattr(transcript, 'text'):
+            # Es un objeto con atributos
+            text = transcript.text
+            segments = [
                 {
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text
+                    "start": seg.start if hasattr(seg, 'start') else seg.get('start', 0),
+                    "end": seg.end if hasattr(seg, 'end') else seg.get('end', 0),
+                    "text": seg.text if hasattr(seg, 'text') else seg.get('text', '')
                 }
-                for segment in transcript.segments
+                for seg in (transcript.segments if hasattr(transcript, 'segments') else transcript.get('segments', []))
             ]
+        else:
+            # Es un diccionario
+            text = transcript.get('text', '')
+            segments = [
+                {
+                    "start": seg.get('start', 0),
+                    "end": seg.get('end', 0),
+                    "text": seg.get('text', '')
+                }
+                for seg in transcript.get('segments', [])
+            ]
+        
+        result = TranscriptionResult(
+            text=text,
+            segments=segments
         )
         
         logger.info(f"Transcripción completada. Longitud: {len(result.text)} caracteres")
@@ -137,73 +198,123 @@ async def transcribe_video(video_path: str) -> TranscriptionResult:
         
         raise
 
+# Función para actualizar respuesta con transcripción
+def update_response_with_transcript(response_id: str, transcript: str, segments: list):
+    """Actualizar respuesta con transcripción en PostgreSQL"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Primero obtener el data actual
+            cur.execute("SELECT data FROM responses WHERE id = %s", (response_id,))
+            result = cur.fetchone()
+            current_data = result['data'] if result else {}
+            
+            # Actualizar con transcripción
+            current_data['transcript'] = transcript
+            current_data['timestamped_transcript'] = segments
+            current_data['transcription_method'] = 'openai_whisper'
+            current_data['transcribed_at'] = datetime.utcnow().isoformat()
+            
+            # Guardar
+            cur.execute("""
+                UPDATE responses 
+                SET data = %s,
+                    processing_status = 'completed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (json.dumps(current_data), response_id))
+            conn.commit()
+    finally:
+        conn.close()
+
+# Función para marcar respuesta como fallida
+def mark_response_as_failed(response_id: str, error: str):
+    """Marcar respuesta como fallida en PostgreSQL"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Obtener data actual
+            cur.execute("SELECT data FROM responses WHERE id = %s", (response_id,))
+            result = cur.fetchone()
+            current_data = result['data'] if result else {}
+            
+            # Agregar error
+            current_data['transcription_error'] = error
+            current_data['transcription_failed_at'] = datetime.utcnow().isoformat()
+            
+            # Guardar
+            cur.execute("""
+                UPDATE responses 
+                SET data = %s,
+                    processing_status = 'failed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (json.dumps(current_data), response_id))
+            conn.commit()
+    finally:
+        conn.close()
+
 # Función principal de procesamiento
 async def process_video(response_id: str):
-    """Procesa un video: descarga, transcribe y actualiza la base de datos"""
+    """Procesa un video: extrae base64, transcribe y actualiza la base de datos"""
     logger.info(f"Iniciando procesamiento para response_id: {response_id}")
     
     try:
         # 1. Obtener datos de la respuesta
-        response = supabase.table('responses').select("*").eq('id', response_id).single().execute()
+        response_data = get_response_data(response_id)
         
-        if not response.data:
+        if not response_data:
             raise ValueError(f"No se encontró respuesta con id: {response_id}")
         
-        response_data = response.data
-        video_url = response_data.get('data', {}).get('video_url')
-        
-        if not video_url:
-            raise ValueError(f"No se encontró video_url para response_id: {response_id}")
+        # Verificar que sea una pregunta de video
+        if response_data['question_type'] != 'video':
+            logger.info(f"Response {response_id} no es de tipo video, omitiendo")
+            return
         
         # 2. Marcar como processing
-        supabase.table('responses').update({
-            'processing_status': 'processing',
-            'updated_at': datetime.utcnow().isoformat()
-        }).eq('id', response_id).execute()
-        
+        update_response_status(response_id, 'processing')
         logger.info(f"Estado actualizado a 'processing' para response_id: {response_id}")
         
-        # 3. Descargar y transcribir video
+        # 3. Extraer video base64
+        video_data = extract_video_data(response_data)
+        
+        if not video_data:
+            raise ValueError(f"No se encontró video base64 para response_id: {response_id}")
+        
+        # 4. Decodificar base64 y guardar temporalmente
+        # Remover el prefijo data:video/webm;base64, si existe
+        if video_data.startswith('data:video'):
+            video_data = video_data.split(',')[1]
+        
+        video_bytes = base64.b64decode(video_data)
+        
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp_file:
+            tmp_file.write(video_bytes)
             video_path = tmp_file.name
-            
-            # Descargar video
-            await download_video(video_url, video_path)
-            
-            # Transcribir
+        
+        try:
+            # 5. Transcribir
             transcription = await transcribe_video(video_path)
             
+            # 6. Actualizar respuesta con transcripción
+            update_response_with_transcript(
+                response_id, 
+                transcription.text,
+                transcription.segments
+            )
+            
+            logger.info(f"✅ Procesamiento completado para response_id: {response_id}")
+            
+        finally:
             # Limpiar archivo temporal
-            os.unlink(video_path)
-        
-        # 4. Actualizar respuesta con transcripción
-        updated_data = response_data.get('data', {})
-        updated_data.update({
-            'transcript': transcription.text,
-            'timestamped_transcript': transcription.segments,
-            'transcription_method': 'openai_whisper',
-            'transcribed_at': datetime.utcnow().isoformat()
-        })
-        
-        supabase.table('responses').update({
-            'data': updated_data,
-            'processing_status': 'completed',
-            'updated_at': datetime.utcnow().isoformat()
-        }).eq('id', response_id).execute()
-        
-        logger.info(f"✅ Procesamiento completado para response_id: {response_id}")
+            if os.path.exists(video_path):
+                os.unlink(video_path)
         
     except Exception as e:
         logger.error(f"❌ Error procesando response_id {response_id}: {str(e)}")
         
         # Marcar como failed
-        try:
-            supabase.table('responses').update({
-                'processing_status': 'failed',
-                'updated_at': datetime.utcnow().isoformat()
-            }).eq('id', response_id).execute()
-        except:
-            pass
+        mark_response_as_failed(response_id, str(e))
         
         raise
 
@@ -271,17 +382,22 @@ async def supabase_webhook(payload: SupabaseWebhookPayload, background_tasks: Ba
 @app.get("/health")
 async def health():
     """Endpoint de salud detallado"""
+    db_status = "unknown"
     try:
-        # Verificar conexión con Supabase
-        supabase.table('responses').select("count").limit(1).execute()
-        supabase_status = "connected"
-    except:
-        supabase_status = "disconnected"
+        # Verificar conexión con PostgreSQL
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            result = cur.fetchone()
+            db_status = "connected" if result else "error"
+        conn.close()
+    except Exception as e:
+        db_status = f"disconnected: {str(e)}"
     
     return {
         "status": "healthy",
         "services": {
-            "supabase": supabase_status,
+            "database": db_status,
             "openai": "configured" if os.getenv("OPENAI_API_KEY") else "not configured"
         }
     }
@@ -295,19 +411,30 @@ async def process_pending_videos():
         try:
             logger.info("Buscando videos pendientes...")
             
-            # Buscar respuestas pendientes
-            result = supabase.table('responses').select("*").eq('processing_status', 'pending').execute()
+            # Buscar respuestas pendientes en PostgreSQL
+            conn = get_db_connection()
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT r.id, r.data, q.type as question_type
+                        FROM responses r
+                        JOIN questions q ON r.question_id = q.id
+                        WHERE r.processing_status = 'pending'
+                        AND q.type = 'video'
+                        LIMIT 10
+                    """)
+                    pending_responses = cur.fetchall()
+            finally:
+                conn.close()
             
-            if result.data:
-                logger.info(f"Encontrados {len(result.data)} videos pendientes")
+            if pending_responses:
+                logger.info(f"Encontrados {len(pending_responses)} videos pendientes")
                 
-                for response in result.data:
-                    # Verificar que sea un video
-                    if response.get('data', {}).get('type') == 'video':
-                        try:
-                            await process_video(response['id'])
-                        except Exception as e:
-                            logger.error(f"Error procesando video {response['id']}: {str(e)}")
+                for response in pending_responses:
+                    try:
+                        await process_video(response['id'])
+                    except Exception as e:
+                        logger.error(f"Error procesando video {response['id']}: {str(e)}")
             else:
                 logger.info("No hay videos pendientes")
                 

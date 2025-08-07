@@ -35,15 +35,32 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
+    "connect_timeout": 30,  # Timeout de conexión
+    "sslmode": "require",   # Requerir SSL para conexiones externas
 }
+
+logger.info(f"Database config: host={DB_CONFIG['host']}, port={DB_CONFIG['port']}, database={DB_CONFIG['database']}")
 
 # Cliente OpenAI
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Función para obtener conexión a PostgreSQL
-def get_db_connection():
-    """Crear conexión a PostgreSQL"""
-    return psycopg2.connect(**DB_CONFIG)
+# Función para obtener conexión a PostgreSQL con reintentos
+def get_db_connection(max_retries=3):
+    """Crear conexión a PostgreSQL con reintentos"""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempting database connection (attempt {attempt + 1}/{max_retries})")
+            conn = psycopg2.connect(**DB_CONFIG)
+            logger.info("Database connection successful")
+            return conn
+        except psycopg2.OperationalError as e:
+            logger.error(f"Database connection attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_retries - 1:
+                raise
+            logger.info(f"Retrying in 5 seconds...")
+            import time
+            time.sleep(5)
+    raise Exception("Failed to connect to database after all retries")
 
 # Variable global para controlar el proceso periódico
 periodic_task_running = False
@@ -331,14 +348,16 @@ async def root():
 @app.post("/webhook")
 async def webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
     """Endpoint webhook que recibe el response_id para procesar"""
-    logger.info(f"Webhook recibido para response_id: {payload.response_id}")
+    logger.info(f"[WEBHOOK] Received request for response_id: {payload.response_id}")
     
     # Validar response_id
     if not payload.response_id:
+        logger.error("[WEBHOOK] Missing response_id in payload")
         raise HTTPException(status_code=400, detail="response_id es requerido")
     
     # Agregar tarea de procesamiento en background
     background_tasks.add_task(process_video, payload.response_id)
+    logger.info(f"[WEBHOOK] Video {payload.response_id} queued for processing")
     
     return {
         "status": "accepted",
@@ -379,13 +398,23 @@ async def supabase_webhook(payload: SupabaseWebhookPayload, background_tasks: Ba
         "message": "Video queued for processing"
     }
 
+@app.get("/")
+async def root():
+    """Endpoint raíz para verificar que el worker está corriendo"""
+    return {
+        "service": "Video Transcription Worker",
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": ["/health", "/webhook", "/supabase-webhook"]
+    }
+
 @app.get("/health")
 async def health():
     """Endpoint de salud detallado"""
     db_status = "unknown"
     try:
-        # Verificar conexión con PostgreSQL
-        conn = get_db_connection()
+        # Verificar conexión con PostgreSQL con timeout reducido
+        conn = get_db_connection(max_retries=1)
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             result = cur.fetchone()
@@ -394,11 +423,22 @@ async def health():
     except Exception as e:
         db_status = f"disconnected: {str(e)}"
     
+    # Verificar variables de entorno críticas
+    env_status = {
+        "DB_HOST": "configured" if os.getenv("DB_HOST") else "missing",
+        "DB_NAME": "configured" if os.getenv("DB_NAME") else "missing", 
+        "DB_USER": "configured" if os.getenv("DB_USER") else "missing",
+        "DB_PASSWORD": "configured" if os.getenv("DB_PASSWORD") else "missing",
+        "OPENAI_API_KEY": "configured" if os.getenv("OPENAI_API_KEY") else "missing"
+    }
+    
     return {
-        "status": "healthy",
+        "status": "healthy" if db_status == "connected" else "unhealthy",
+        "timestamp": datetime.now().isoformat(),
+        "periodic_task_running": periodic_task_running,
         "services": {
             "database": db_status,
-            "openai": "configured" if os.getenv("OPENAI_API_KEY") else "not configured"
+            "environment": env_status
         }
     }
 
@@ -406,13 +446,15 @@ async def health():
 async def process_pending_videos():
     """Busca y procesa videos pendientes cada 30 segundos"""
     global periodic_task_running
+    consecutive_failures = 0
+    max_consecutive_failures = 5
     
     while periodic_task_running:
         try:
             logger.info("Buscando videos pendientes...")
             
             # Buscar respuestas pendientes en PostgreSQL
-            conn = get_db_connection()
+            conn = get_db_connection(max_retries=2)  # Reducir reintentos en proceso periódico
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("""
@@ -437,12 +479,25 @@ async def process_pending_videos():
                         logger.error(f"Error procesando video {response['id']}: {str(e)}")
             else:
                 logger.info("No hay videos pendientes")
+            
+            # Reset contador de fallos consecutivos en caso de éxito
+            consecutive_failures = 0
                 
         except Exception as e:
-            logger.error(f"Error en proceso periódico: {str(e)}")
+            consecutive_failures += 1
+            logger.error(f"Error en proceso periódico (intento {consecutive_failures}/{max_consecutive_failures}): {str(e)}")
+            
+            # Si hay muchos fallos consecutivos, incrementar el tiempo de espera
+            if consecutive_failures >= max_consecutive_failures:
+                wait_time = 300  # 5 minutos
+                logger.warning(f"Demasiados fallos consecutivos. Esperando {wait_time} segundos antes del siguiente intento.")
+                await asyncio.sleep(wait_time)
+                consecutive_failures = 0  # Reset después del tiempo extendido
+                continue
         
-        # Esperar 30 segundos antes de la siguiente verificación
-        await asyncio.sleep(30)
+        # Esperar 30 segundos antes de la siguiente verificación (o más si hay problemas)
+        wait_time = 30 + (consecutive_failures * 10)  # Incrementar tiempo con fallos
+        await asyncio.sleep(wait_time)
 
 @app.on_event("startup")
 async def startup_event():

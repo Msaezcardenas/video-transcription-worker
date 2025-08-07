@@ -43,7 +43,6 @@ LOG_LEVEL=INFO
 - `GET /` - Información del servicio
 - `GET /health` - Estado de salud detallado
 - `POST /webhook` - Recibir requests de transcripción
-- `POST /supabase-webhook` - Webhook nativo de Supabase
 
 ## Verificación de Despliegue
 

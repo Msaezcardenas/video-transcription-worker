@@ -1,14 +1,14 @@
-# Talium Video Transcription Worker
+# TalentaPro Video Transcription Worker
 
 
-**Talium Video Transcription Worker** es el microservicio encargado de procesar y transcribir videos de entrevistas en la plataforma Talium, usando inteligencia artificial de última generación (OpenAI Whisper).
+**TalentaPro Video Transcription Worker** es el microservicio encargado de procesar y transcribir videos de entrevistas en la plataforma TalentaPro, usando inteligencia artificial de última generación (OpenAI Whisper).
 
 ---
 
 ## 🎯 ¿Para qué sirve este worker?
 - Automatiza la transcripción de respuestas en video de los candidatos.
-- Recibe webhooks desde la app principal Talium y procesa en background.
-- Actualiza la base de datos de Supabase con transcripciones y metadatos.
+- Recibe webhooks desde la app principal TalentaPro y procesa en background.
+- Actualiza la base de datos PostgreSQL con transcripciones y metadatos.
 - Permite a RRHH analizar respuestas de video de forma eficiente y accesible.
 
 ---
@@ -16,25 +16,25 @@
 ## 🏗️ Arquitectura y Diseño
 - **Python + FastAPI:** API robusta, asíncrona y fácil de mantener.
 - **OpenAI Whisper:** Transcripción automática de audio/video con alta precisión.
-- **Supabase:** Fuente de datos y almacenamiento seguro de videos.
+- **PostgreSQL:** Base de datos robusta para almacenamiento de transcripciones.
 - **Procesamiento desacoplado:** El worker es independiente, escalable y puede correr en cualquier infraestructura (Render, Railway, Docker, local).
 - **Logging detallado:** Para debugging y monitoreo en producción.
 
 ### Diagrama de flujo
 ```
-[App Talium] --(webhook: response_id)--> [Worker]
-    |                                 |
-    |<-- PATCH: transcript, status ---|
-[Supabase Storage] <--- descarga ---> [Worker]
+[App TalentaPro] --(webhook: response_id)--> [Worker]
+    |                                      |
+    |<-- UPDATE: transcript, status -------|
+[PostgreSQL Database] <--- conexión ---> [Worker]
 ```
 
 ---
 
 ## 🚀 Características principales
 - Webhook endpoint para recibir `response_id`
-- Descarga videos desde Supabase Storage
+- Procesa videos almacenados en base64 en la base de datos
 - Transcribe con OpenAI Whisper (texto y timestamps)
-- Actualiza estado y transcripción en la base de datos
+- Actualiza estado y transcripción en la base de datos PostgreSQL
 - Procesamiento asíncrono y seguro
 - Logging detallado para debugging
 
@@ -44,7 +44,7 @@
 
 ### Requisitos
 - Python 3.8+
-- Cuenta de Supabase con Service Key
+- Base de datos PostgreSQL
 - API Key de OpenAI
 
 ### Instalación local
@@ -56,8 +56,11 @@ pip install -r requirements.txt
 ### Configuración de variables de entorno
 Crea un archivo `.env`:
 ```env
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+DB_HOST=your-postgres-host
+DB_PORT=5432
+DB_NAME=your-database-name
+DB_USER=your-database-user
+DB_PASSWORD=your-database-password
 OPENAI_API_KEY=sk-your-openai-api-key
 ```
 
@@ -75,8 +78,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - **Heroku:** Soportado (ver ejemplo en este README)
 - **Docker:**
 ```bash
-docker build -t talium-worker .
-docker run -p 8000:8000 --env-file .env talium-worker
+docker build -t talentapro-worker .
+docker run -p 8000:8000 --env-file .env talentapro-worker
 ```
 
 ---
@@ -108,12 +111,13 @@ POST http://localhost:8000/webhook
 
 ## 🔄 Flujo de Procesamiento
 1. Recibe webhook con `response_id`
-2. Obtiene datos de la tabla `responses` en Supabase
+2. Obtiene datos de la tabla `responses` en PostgreSQL
 3. Marca como `processing`
-4. Descarga video desde `video_url`
-5. Transcribe con Whisper
-6. Actualiza respuesta con transcripción y timestamps
-7. Marca como `completed` o `failed`
+4. Extrae video base64 de los datos almacenados
+5. Decodifica y guarda temporalmente el video
+6. Transcribe con Whisper
+7. Actualiza respuesta con transcripción y timestamps
+8. Marca como `completed` o `failed`
 
 ---
 
@@ -121,7 +125,10 @@ POST http://localhost:8000/webhook
 El worker actualiza el campo JSONB `data` en la tabla `responses`:
 ```json
 {
-  "video_url": "url-existente",
+  "response": {
+    "type": "video",
+    "data": "data:video/webm;base64,..."
+  },
   "transcript": "Texto completo de la transcripción",
   "timestamped_transcript": [
     { "start": 0.0, "end": 3.5, "text": "Segmento de texto" }
@@ -150,7 +157,7 @@ El worker actualiza el campo JSONB `data` en la tabla `responses`:
 ---
 
 ## 🔐 Seguridad y Buenas Prácticas
-- El Service Key de Supabase debe mantenerse **privado** (nunca en frontend)
+- Las credenciales de PostgreSQL deben mantenerse **privadas** (nunca en frontend)
 - Considera agregar autenticación al webhook en producción
 - Usa HTTPS en producción
 - Manejo robusto de errores y logs
@@ -164,18 +171,17 @@ El worker actualiza el campo JSONB `data` en la tabla `responses`:
 ---
 
 ## 🐛 Troubleshooting
-- **No se encontró video_url:** Verifica que el campo `data.video_url` existe en la respuesta
+- **No se encontró video base64:** Verifica que el campo `data.response.data` existe en la respuesta
 - **Error de transcripción:** Verifica el API Key de OpenAI y que el video tenga audio
-- **Worker no procesa:** Revisa los logs y la conexión con Supabase
+- **Worker no procesa:** Revisa los logs y la conexión con PostgreSQL
 
 ---
 
 ## 👨‍💻 Créditos y Contacto
 - **Desarrollo & Integración:** Molu Sáez (github.com/Msaezcardenas)
-- **Contacto:** soporte@talium.com
+- **Contacto:** soporte@talentapro.com
 
 ---
 
 ## 📝 Licencia
-MIT 
-- Verifica conexión con Supabase 
+MIT

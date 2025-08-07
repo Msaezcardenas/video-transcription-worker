@@ -69,13 +69,6 @@ periodic_task_running = False
 class WebhookPayload(BaseModel):
     response_id: str
     
-class SupabaseWebhookPayload(BaseModel):
-    type: str  # INSERT, UPDATE, DELETE
-    table: str
-    record: dict
-    schema: str
-    old_record: Optional[dict] = None
-    
 class TranscriptionResult(BaseModel):
     text: str
     segments: list
@@ -336,14 +329,6 @@ async def process_video(response_id: str):
         raise
 
 # Endpoints
-@app.get("/")
-async def root():
-    """Endpoint de salud"""
-    return {
-        "status": "ok",
-        "service": "Video Transcription Worker",
-        "version": "1.0.0"
-    }
 
 @app.post("/webhook")
 async def webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
@@ -365,39 +350,6 @@ async def webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
         "message": "Video queued for processing"
     }
 
-@app.post("/supabase-webhook")
-async def supabase_webhook(payload: SupabaseWebhookPayload, background_tasks: BackgroundTasks):
-    """Endpoint para webhooks nativos de Supabase"""
-    logger.info(f"Supabase webhook recibido: {payload.type} en tabla {payload.table}")
-    
-    # Solo procesar inserciones en la tabla responses
-    if payload.type != "INSERT" or payload.table != "responses":
-        return {"status": "ignored", "reason": "Not an INSERT on responses table"}
-    
-    record = payload.record
-    
-    # Verificar si es un video
-    if not record.get('data', {}).get('type') == 'video':
-        return {"status": "ignored", "reason": "Not a video response"}
-    
-    if not record.get('data', {}).get('video_url'):
-        return {"status": "ignored", "reason": "No video_url found"}
-    
-    response_id = record.get('id')
-    if not response_id:
-        raise HTTPException(status_code=400, detail="No response_id in record")
-    
-    logger.info(f"Procesando video para response_id: {response_id}")
-    
-    # Agregar tarea de procesamiento en background
-    background_tasks.add_task(process_video, response_id)
-    
-    return {
-        "status": "accepted",
-        "response_id": response_id,
-        "message": "Video queued for processing"
-    }
-
 @app.get("/")
 async def root():
     """Endpoint raíz para verificar que el worker está corriendo"""
@@ -405,7 +357,7 @@ async def root():
         "service": "Video Transcription Worker",
         "status": "running",
         "timestamp": datetime.now().isoformat(),
-        "endpoints": ["/health", "/webhook", "/supabase-webhook"]
+        "endpoints": ["/health", "/webhook"]
     }
 
 @app.get("/health")

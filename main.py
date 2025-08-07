@@ -36,7 +36,7 @@ DB_CONFIG = {
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "connect_timeout": 30,  # Timeout de conexión
-    "sslmode": "require",   # Requerir SSL para conexiones externas
+    "sslmode": os.getenv("DB_SSLMODE", "prefer"),  # SSL opcional por defecto
 }
 
 logger.info(f"Database config: host={DB_CONFIG['host']}, port={DB_CONFIG['port']}, database={DB_CONFIG['database']}")
@@ -381,6 +381,7 @@ async def health():
         "DB_NAME": "configured" if os.getenv("DB_NAME") else "missing", 
         "DB_USER": "configured" if os.getenv("DB_USER") else "missing",
         "DB_PASSWORD": "configured" if os.getenv("DB_PASSWORD") else "missing",
+        "DB_SSLMODE": os.getenv("DB_SSLMODE", "prefer"),
         "OPENAI_API_KEY": "configured" if os.getenv("OPENAI_API_KEY") else "missing"
     }
     

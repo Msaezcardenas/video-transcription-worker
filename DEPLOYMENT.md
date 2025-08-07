@@ -20,7 +20,13 @@ OPENAI_API_KEY=your_openai_api_key_here
 ```
 PORT=10000
 LOG_LEVEL=INFO
+DB_SSLMODE=prefer
 ```
+
+#### Opciones para DB_SSLMODE:
+- `disable` - Sin SSL (menos seguro, pero puede resolver problemas de conexión)
+- `prefer` - SSL si está disponible, sino conexión normal (recomendado)
+- `require` - SSL obligatorio (más seguro, pero puede fallar si no está configurado)
 
 ## Problemas Comunes
 
